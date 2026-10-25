@@ -1,24 +1,3 @@
----@tag cds-lua
----@text
---- cds-lua is a common library for Neovim plugins written in a functional style:
---- `fp` and `result` for the vocabulary, `task` for asynchronous work, and the
---- modules that grew out of the plugins that use them (processes, HTTP,
---- documents, redraws). Each module is pure Lua that names no plugin; every
---- function answers `value` or `nil, err`, and `nil` alone means failure
---- (|cds.result|).
----
---- The library grows by addition: a function keeps its contract under its
---- name, and a different contract gets a different name, so a plugin can
---- declare the functions it uses and run on any commit that has them
---- (|cds.needs|). A name a module does not have fails at the call, in words
---- (|cds.module|).
----
---- This manual covers the modules the plugins call in common. The rest (the
---- document readers, OAuth, processes, dates) are documented in their source,
---- which the language server shows on hover, and on the reference site.
----
----@toc
-
 ---@tag cds.needs
 ---@toc_entry Taking the library
 ---@text
@@ -30,9 +9,9 @@
 ---     dependencies = { { "cds-io/cds-lua", lazy = true } },
 ---   }
 --- <
---- The dependency tracks `main` with no pin, so one `:Lazy update` moves the
---- family together, and one copy of `lua/cds/` is on the runtimepath, so
---- `require("cds.fp")` has one file to resolve to.
+--- The dependency tracks `main` with no pin, so one `:Lazy update` moves every
+--- plugin that depends on it together, and one copy of `lua/cds/` is on the
+--- runtimepath, so `require("cds.fp")` has one file to resolve to.
 ---
 --- What the plugin calls is declared in `lua/<plugin>/needs.lua`, by module
 --- and name: a function, or a table such as `http.status`. >lua
@@ -44,8 +23,9 @@
 ---   }
 --- <
 --- The plugin's entry runs |cds.needs.check()| first and refuses the whole
---- plugin, in one message naming the remedy, when the library installed lacks
---- a name. Its spec harness wraps the declared modules through
+--- plugin, in one message naming the remedy, when the libraries installed lack
+--- a name; the message names the library each name belongs to, this rock for
+--- `fp`, `result`, `module` and `needs`, cds-lua for the rest. Its spec harness wraps the declared modules through
 --- |cds.needs.strict()|, so a call the declaration leaves out fails the spec
 --- in words, and the declaration stays what the code uses.
 ---
@@ -102,8 +82,14 @@ function M.missing(capabilities)
   end)
 end
 
+-- The modules this rock carries; every other cds module is cds-lua's.
+local ROCK = { fp = true, result = true, module = true, needs = true }
+
 --- Answers nil when everything declared is here; otherwise one sentence for the
---- reader, naming the plugin, the missing functions and the remedy.
+--- reader, naming the plugin, the missing functions and the remedy, by the
+--- library each function belongs to: "a.nvim needs cds-lua-fp with
+--- fp.filter_mop and cds-lua with redraw.places: install or update
+--- cds-io/cds-lua-fp and cds-io/cds-lua".
 ---@param plugin string  -- truth-table.nvim
 ---@param capabilities cds.needs.Capabilities
 ---@return string|nil
@@ -112,7 +98,24 @@ function M.check(plugin, capabilities)
   if #missing == 0 then
     return nil
   end
-  return ("%s needs cds-lua with %s: install or update cds-io/cds-lua"):format(plugin, table.concat(missing, ", "))
+  local homes = { "cds-lua-fp", "cds-lua" }
+  local by_home = { ["cds-lua-fp"] = {}, ["cds-lua"] = {} }
+  for _, name in ipairs(missing) do
+    local home = ROCK[name:match("^[^.]+")] and homes[1] or homes[2]
+    table.insert(by_home[home], name)
+  end
+  local needs, remedies = {}, {}
+  for _, home in ipairs(homes) do
+    if #by_home[home] > 0 then
+      needs[#needs + 1] = ("%s with %s"):format(home, table.concat(by_home[home], ", "))
+      remedies[#remedies + 1] = "cds-io/" .. home
+    end
+  end
+  return ("%s needs %s: install or update %s"):format(
+    plugin,
+    table.concat(needs, " and "),
+    table.concat(remedies, " and ")
+  )
 end
 
 --- Whether a function is one of this library's own: its chunk is a file

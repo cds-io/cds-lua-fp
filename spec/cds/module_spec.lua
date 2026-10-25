@@ -42,13 +42,20 @@ describe("cds.module", function()
     assert.are.same({ "here" }, keys)
   end)
 
-  it("names a method a Task instance does not have, through the class table", function()
-    local Task = require("cds.task")
-    local t = Task.of(1)
+  it("names a method an instance does not have, through the class table", function()
+    -- a class table wrapped as a module: the fallback reaches an instance
+    -- through __index, the way cds.task's does
+    local Thing = {}
+    Thing.__index = Thing
+    function Thing.of(value)
+      return setmetatable({ value = value }, Thing)
+    end
+    local Wrapped = module.wrap("thing", Thing)
+    local t = Wrapped.of(1)
     local ok, err = pcall(function()
       return t:bend()
     end)
     assert.is_false(ok)
-    assert.is_truthy(tostring(err):find('cds.task has no "bend"', 1, true), tostring(err))
+    assert.is_truthy(tostring(err):find('cds.thing has no "bend"', 1, true), tostring(err))
   end)
 end)

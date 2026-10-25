@@ -1,10 +1,26 @@
+---@tag cds-lua-fp
+---@text
+--- cds-lua-fp is a small functional vocabulary for Lua: |cds.fp| for lists,
+--- |cds.result| for Lua's own error convention (a function answers `value`,
+--- or `nil, err`, and only nil fails), |cds.module|, a fallback a module
+--- returns through so that a name it does not have fails at the call, in
+--- words, and |cds.needs|, a check a program runs at startup against the
+--- libraries installed. The four files use nothing beyond the standard
+--- library, so they run on Lua 5.1 and up, under LuaJIT and inside Neovim
+--- alike.
+---
+--- Install it as a rock, `luarocks install cds-lua-fp`, or as a lazy.nvim
+--- plugin, `{ "cds-io/cds-lua-fp", lazy = true }`; cds-lua, a Neovim library
+--- built on it, declares it as a dependency.
+---
+---@toc
+
 ---@tag cds.fp
 ---@toc_entry Lists
 ---@text
---- These are the list helpers the library and the plugins share: map, filter,
---- reduce, find, find_map, any, all, set and unique. They exist because the
---- pure modules run under plain Lua 5.1, which builds none of these in, and
---- without `vim`, so without vim.iter. A list is a sequence (items at 1..n,
+--- The list helpers: map, filter, reduce, find, find_map, any, all, set and
+--- unique. They exist because pure Lua 5.1 builds none of these in, and code
+--- meant to run outside Neovim has no vim.iter. A list is a sequence (items at 1..n,
 --- no holes), read with ipairs. Map, filter and unique return fresh lists,
 --- set a fresh table, reduce the final accumulator, find the item, any and
 --- all a boolean; none modifies the input list. The function argument comes

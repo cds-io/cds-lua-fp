@@ -83,6 +83,18 @@ describe("cds.needs", function()
         needs.check("a.nvim", { probe = { "gone", "nope" } })
       )
     end)
+
+    it("names this rock for its own modules, and both libraries when both are short", function()
+      assert.are.equal(
+        "a.nvim needs cds-lua-fp with fp.filter_mop: install or update cds-io/cds-lua-fp",
+        needs.check("a.nvim", { fp = { "filter_mop" } })
+      )
+      assert.are.equal(
+        "a.nvim needs cds-lua-fp with fp.filter_mop and cds-lua with probe.gone: "
+          .. "install or update cds-io/cds-lua-fp and cds-io/cds-lua",
+        needs.check("a.nvim", { fp = { "filter_mop" }, probe = { "gone" } })
+      )
+    end)
   end)
 
   describe("strict", function()
@@ -105,7 +117,9 @@ describe("cds.needs", function()
     it("lets the library's own files through, loaded after the proxies went in", function()
       -- a module compiled as if it were lua/cds/late.lua, reaching an
       -- undeclared name of a proxied module from inside the library
-      package.preload["cds.late"] = assert(load(
+      -- Lua 5.1 compiles a string with loadstring, 5.2 and up with load
+      local compile = loadstring or load
+      package.preload["cds.late"] = assert(compile(
         [[
           local probe = require("cds.probe")
           return { go = function() probe.also() return "late" end }
