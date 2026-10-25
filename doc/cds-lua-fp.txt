@@ -1,37 +1,66 @@
                                                                     *cds-lua-fp*
-cds-lua-fp is a small functional vocabulary for Lua: |cds.fp| for lists,
-|cds.result| for Lua's own error convention (a function answers `value`,
-or `nil, err`, and only nil fails), |cds.module|, a fallback a module
-returns through so that a name it does not have fails at the call, in
-words, and |cds.needs|, a check a program runs at startup against the
-libraries installed. The four files use nothing beyond the standard
-library, so they run on Lua 5.1 and up, under LuaJIT and inside Neovim
-alike.
+cds-lua-fp provides reusable list operations and error propagation for Lua
+5.1 and later, including LuaJIT and Neovim. It has no dependencies outside
+the Lua standard library.
 
-Install it as a rock, `luarocks install cds-lua-fp`, or as a lazy.nvim
-plugin, `{ "cds-io/cds-lua-fp", lazy = true }`; cds-lua, a Neovim library
-built on it, declares it as a dependency.
+Use |cds.fp| to express transformations such as selecting records, extracting
+fields, and removing duplicates without writing a loop for each operation.
+Use |cds.result| to chain operations that return `value` or `nil, err` and
+handle the first failure in one place. For plugins that share the library,
+|cds.needs| checks required APIs at startup, and |cds.module| makes calls to
+missing APIs report the module and name involved.
 
+Install with `luarocks install cds-lua-fp`, or add
+`{ "cds-io/cds-lua-fp", lazy = true }` to a lazy.nvim configuration.
+The Neovim library cds-lua also declares it as a dependency.
   Lists ............................................................. |cds.fp|
   The Result convention ......................................... |cds.result|
   Names a module does not have .................................. |cds.module|
   Taking the library ............................................. |cds.needs|
 
                                                                         *cds.fp*
-The list helpers: map, filter, reduce, find, find_map, any, all, set and
-unique. They exist because pure Lua 5.1 builds none of these in, and code
-meant to run outside Neovim has no vim.iter. A list is a sequence (items at 1..n,
-no holes), read with ipairs. Map, filter and unique return fresh lists,
-set a fresh table, reduce the final accumulator, find the item, any and
-all a boolean; none modifies the input list. The function argument comes
-last, so one written out over several lines reads as a block.
+Use these helpers when a loop's purpose is a standard list operation:
+selecting, transforming, searching, or accumulating. Naming the operation
+lets the callback focus on the application rule. They work in plain Lua
+as well as Neovim.
+
+For example, select enabled jobs and extract their names: >lua
+
+  local fp = require("cds.fp")
+  local jobs = {
+    { name = "build", enabled = true },
+    { name = "deploy", enabled = false },
+  }
+  local enabled = fp.filter(jobs, function(job) return job.enabled end)
+  local names = fp.map(enabled, function(job) return job.name end)
+  assert(#names == 1 and names[1] == "build")
+  assert(#jobs == 2) -- the input list is unchanged
+<
+Inputs are dense sequences indexed from 1: traversal uses `ipairs`, which
+stops at the first missing index. Helpers do not mutate the input list;
+returned records are the original objects, not deep copies. Callbacks may
+still mutate those objects, so keep them pure when sharing input data.
+
+Use `map` when every input produces a value, `filter_map` when some inputs
+should be omitted, and |cds.result.traverse()| when a failed conversion
+should reject the whole list. Callback arguments come last so multiline
+functions sit directly below the operation they define.
 
 ------------------------------------------------------------------------------
                                                                   *cds.fp.map()*
                              `fp.map`({list}, {fn})
-Builds the list of fn(item, index) for each item, in order. A nil result is
-an error: it would leave a hole, and ipairs would stop reading the list
-there.
+Transform every item while retaining its position. Use this to extract a
+field or convert a list to another representation. A nil callback result
+raises an error identifying the item: silently creating a hole would make
+later `ipairs` loops stop early. False is a valid result.
+
+>lua
+  local fp = require("cds.fp")
+  local names = fp.map({ { name = "Ada" }, { name = "Lin" } }, function(user)
+    return user.name
+  end)
+  assert(table.concat(names, ", ") == "Ada, Lin")
+<
 Parameters ~
 {list} `(T[])`
 {fn} `(fun(item: T, index: integer): U)`
@@ -41,7 +70,14 @@ Return ~
 ------------------------------------------------------------------------------
                                                                *cds.fp.filter()*
                           `fp.filter`({list}, {keep})
-Keeps the items for which keep(item, index) is true, in order.
+Select items without changing their order or representation. Keep an item
+when `keep(item, index)` is truthy; return a fresh list of those items.
+
+>lua
+  local fp = require("cds.fp")
+  local positive = fp.filter({ -1, 0, 2, 3 }, function(n) return n > 0 end)
+  assert(#positive == 2 and positive[1] == 2 and positive[2] == 3)
+<
 Parameters ~
 {list} `(T[])`
 {keep} `(fun(item: T, index: integer): any)`
@@ -51,9 +87,18 @@ Return ~
 ------------------------------------------------------------------------------
                                                                *cds.fp.reduce()*
                       `fp.reduce`({list}, {initial}, {fn})
-Folds the items into one value, left to right: the result of fn(value, item,
-index) is the value the next item meets, starting from `initial`, which is
-also what an empty list gives.
+Combine a list into one result, such as a total or lookup table. Start with
+`initial`; each callback receives the previous accumulator, the item, and
+its index. Return the final accumulator, or `initial` for an empty list.
+
+>lua
+  local fp = require("cds.fp")
+  local total = fp.reduce({ 10, 20, 30 }, 0, function(sum, price)
+    return sum + price
+  end)
+  assert(total == 60)
+  assert(fp.reduce({}, 0, function() error("not called") end) == 0)
+<
 Parameters ~
 {list} `(T[])`
 {initial} `(A)`
@@ -64,9 +109,17 @@ Return ~
 ------------------------------------------------------------------------------
                                                                  *cds.fp.find()*
                            `fp.find`({list}, {test})
-Finds the first item for which test(item, index) is truthy and answers it
-with its index; nil when none is. The lists here hold nodes, strings and
-records, never false, so a falsy answer means no item.
+Locate the first matching item without scanning the rest of the list.
+Return the item and its index, or nil when no item matches. Test the index
+or compare the item with nil: false can itself be a matching item.
+
+>lua
+  local fp = require("cds.fp")
+  local item, index = fp.find({ true, false, true }, function(v)
+    return v == false
+  end)
+  assert(item == false and index == 2)
+<
 Parameters ~
 {list} `(T[])`
 {test} `(fun(item: T, index: integer): any)`
@@ -77,9 +130,17 @@ Return ~
 ------------------------------------------------------------------------------
                                                              *cds.fp.find_map()*
                           `fp.find_map`({list}, {fn})
-Answers the first non-nil fn(item, index), stopping there; nil when every
-item answers nil. One pass that finds and transforms at once, for a chain of
-parsers tried in order: the first that reads the line gives the record.
+Try alternatives in order and return the first non-nil conversion. Use
+this for parsers or lookup strategies where nil means "try the next one".
+Stop immediately on a result, including false; return nil if none succeeds.
+
+>lua
+  local fp = require("cds.fp")
+  local n = fp.find_map({ "unknown", "42", "99" }, function(text)
+    return tonumber(text)
+  end)
+  assert(n == 42)
+<
 Parameters ~
 {list} `(T[])`
 {fn} `(fun(item: T, index: integer): U?)`
@@ -89,8 +150,16 @@ Return ~
 ------------------------------------------------------------------------------
                                                              *cds.fp.flat_map()*
                           `fp.flat_map`({list}, {fn})
-Joins the lists fn(item, index) answers, in order: a map whose answers are
-lists, flattened one level.
+Expand each item into zero or more items and concatenate the resulting
+lists in input order. Use this when one record contributes several output
+records; the callback must return a list, with `{}` contributing nothing.
+
+>lua
+  local fp = require("cds.fp")
+  local files = fp.flat_map({ { "a.lua", "b.lua" }, {}, { "c.lua" } },
+    function(group) return group end)
+  assert(table.concat(files, ",") == "a.lua,b.lua,c.lua")
+<
 Parameters ~
 {list} `(T[])`
 {fn} `(fun(item: T, index: integer): U[])`
@@ -100,8 +169,16 @@ Return ~
 ------------------------------------------------------------------------------
                                                                  *cds.fp.keys()*
                                  `fp.keys`({t})
-Lists the keys of a table, in no particular order; sort it when the order
-matters.
+Collect a table's keys so they can be filtered, sorted, or displayed.
+Their order is unspecified because collection uses `pairs`; sort the result
+when producing stable output.
+
+>lua
+  local fp = require("cds.fp")
+  local names = fp.keys({ build = true, test = true })
+  table.sort(names)
+  assert(table.concat(names, ",") == "build,test")
+<
 Parameters ~
 {t} `(table<K, any>)`
 Return ~
@@ -110,9 +187,17 @@ Return ~
 ------------------------------------------------------------------------------
                                                                  *cds.fp.each()*
                             `fp.each`({list}, {fn})
-Calls fn(item, index) for each item, in order, for what it does; the answers
-are dropped. Where map builds a list, each performs an action per item: a
-cursor set in every window showing a buffer.
+Perform an action for each item in order, ignoring callback return values.
+Use this when the action matters and no output list is needed.
+
+>lua
+  local fp = require("cds.fp")
+  local written = {}
+  fp.each({ "first", "second" }, function(line)
+    written[#written + 1] = line -- stand-in for an output sink
+  end)
+  assert(table.concat(written, "\n") == "first\nsecond")
+<
 Parameters ~
 {list} `(T[])`
 {fn} `(fun(item: T, index: integer))`
@@ -120,9 +205,18 @@ Parameters ~
 ------------------------------------------------------------------------------
                                                            *cds.fp.filter_map()*
                          `fp.filter_map`({list}, {fn})
-Keeps every non-nil fn(item, index), in order. One pass that filters and
-transforms at once, for a reading that keeps what it can parse: the heading
-each line carries, for the lines that carry one.
+Convert the items that are relevant and omit the rest in one pass. Keep
+each non-nil callback result, including false, in input order. Use this
+when an unsuccessful conversion should be skipped rather than fail the
+whole operation.
+
+>lua
+  local fp = require("cds.fp")
+  local numbers = fp.filter_map({ "10", "skip", "20" }, function(text)
+    return tonumber(text)
+  end)
+  assert(#numbers == 2 and numbers[1] == 10 and numbers[2] == 20)
+<
 Parameters ~
 {list} `(T[])`
 {fn} `(fun(item: T, index: integer): U?)`
@@ -132,7 +226,14 @@ Return ~
 ------------------------------------------------------------------------------
                                                                   *cds.fp.any()*
                             `fp.any`({list}, {test})
-Does test(item, index) hold for some item? Stops at the first.
+Check whether at least one item satisfies a condition. Stop at the first
+truthy callback result; an empty list returns false.
+
+>lua
+  local fp = require("cds.fp")
+  assert(fp.any({ 0, 5, 0 }, function(count) return count > 0 end))
+  assert(not fp.any({}, function() return true end))
+<
 Parameters ~
 {list} `(T[])`
 {test} `(fun(item: T, index: integer): any)`
@@ -142,8 +243,15 @@ Return ~
 ------------------------------------------------------------------------------
                                                                   *cds.fp.all()*
                             `fp.all`({list}, {test})
-Does test(item, index) hold for every item? Stops at the first that
-fails; true for an empty list.
+Check whether every item satisfies a condition. Stop at the first falsy
+callback result. An empty list returns true because no item violates the
+condition; check the length separately if at least one item is required.
+
+>lua
+  local fp = require("cds.fp")
+  assert(fp.all({ 2, 4 }, function(n) return n % 2 == 0 end))
+  assert(not fp.all({ 2, 3 }, function(n) return n % 2 == 0 end))
+<
 Parameters ~
 {list} `(T[])`
 {test} `(fun(item: T, index: integer): any)`
@@ -153,7 +261,15 @@ Return ~
 ------------------------------------------------------------------------------
                                                                   *cds.fp.set()*
                             `fp.set`({list}, {key})
-Builds a set of the items: a table of each one's key to true.
+Build a lookup table for repeated membership checks. Each item, or its
+`key(item, index)`, becomes a table key with value true. Duplicate keys
+collapse into one entry. A nil key raises an error identifying the item.
+
+>lua
+  local fp = require("cds.fp")
+  local allowed = fp.set({ "read", "write", "read" })
+  assert(allowed.read and allowed.write and allowed.delete == nil)
+<
 Parameters ~
 {list} `(T[])`
 {key} `(optional)` `(fun(item: T, index: integer): any)` the item itself without one
@@ -163,8 +279,17 @@ Return ~
 ------------------------------------------------------------------------------
                                                                *cds.fp.unique()*
                            `fp.unique`({list}, {key})
-Keeps the items whose key has not appeared before, in order: the first of
-each.
+Remove duplicates while preserving the first item for each key and its
+position relative to other retained items. Supply `key` to compare records
+by an identifier; without it, items themselves are the keys. A nil key
+raises an error identifying the item.
+
+>lua
+  local fp = require("cds.fp")
+  local records = { { id = "a", n = 1 }, { id = "a", n = 2 }, { id = "b" } }
+  local first = fp.unique(records, function(record) return record.id end)
+  assert(#first == 2 and first[1] == records[1] and first[2] == records[3])
+<
 Parameters ~
 {list} `(T[])`
 {key} `(optional)` `(fun(item: T, index: integer): any)` the item itself without one
@@ -174,19 +299,67 @@ Return ~
 
 ==============================================================================
                                                                     *cds.result*
-Composes Lua's own error convention: a function answers `value`, or
-`nil, err`, and only nil fails, so false and zero are valid successful
-values. A step that can refuse goes through `bind` or `traverse`; one that
-cannot goes through `map`, so a reader can tell the two apart at the call.
-Where a step cannot fail and there is no error to carry, |cds.fp.map()| is
-the plain list map. Errors are values until the dispatch rim turns the
-last one into a message for the reader.
+Use `result` when several operations can fail and later operations need the
+previous result. It carries the first error past the remaining steps, so
+you can handle failure once instead of repeating a check after every call.
+It uses ordinary Lua return values: `value` for success, `nil, err` for
+failure. There is no Result object to construct or unwrap.
+
+For example, parse a setting, validate it, then format it for display: >lua
+
+  local result = require("cds.result")
+  local function parse(text)
+    local n = tonumber(text)
+    if n == nil then return nil, "expected a number" end
+    return n
+  end
+  local function positive(n)
+    if n <= 0 then return nil, "must be positive" end
+    return n
+  end
+  local function label(text)
+    local value, err = parse(text)
+    value, err = result.bind(value, err, positive)
+    return result.map(value, err, function(n)
+      return "Retries: " .. n
+    end)
+  end
+
+  assert(label("3") == "Retries: 3")
+  local value, err = label("oops")
+  assert(value == nil and err == "expected a number")
+  -- Neither positive nor the formatting callback runs on this failure.
+<
+Choose `bind` for a callback that can return `nil, err`; choose `map` for
+one that produces a non-nil value. Use `traverse` to validate or transform
+a whole list when any failed item should reject the result. For a list
+transformation with no error propagation, use |cds.fp.map()|.
+
+Only nil signals failure: false and zero are successful values. These
+helpers do not catch thrown errors; callbacks must return expected failures
+as `nil, err`. The caller decides whether to display, log, or return the
+final error.
+
+Keep both return values in locals before passing them to `bind` or `map`.
+Lua keeps only the first return value of a call followed by more arguments:
+`result.bind(parse(text), nil, positive)` would discard the parse error.
 
 ------------------------------------------------------------------------------
                                                              *cds.result.bind()*
                       `result.bind`({value}, {err}, {fn})
-Passes the value through `fn`, which may refuse (nil, err), and an error
-through untouched.
+Run the next fallible step only if the previous step succeeded. On failure,
+return `nil, err` unchanged without calling `fn`; on success, return what
+`fn(value)` returns. This prevents later steps from acting on missing data.
+
+>lua
+  local result = require("cds.result")
+  local called = false
+  local value, err = result.bind(nil, "file not found", function(text)
+    called = true
+    return text:upper()
+  end)
+  assert(value == nil and err == "file not found" and not called)
+<
 Parameters ~
 {value} `(T?)`
 {err} `(any)`
@@ -198,16 +371,31 @@ Return ~
 ------------------------------------------------------------------------------
                                                                 *cds.result.map*
                                   `result.map`
-Passes the value through `fn`, which always answers, and an error through
-untouched. The same step as bind: the name says at the call whether `fn` can
-refuse.
+Transform a successful value while preserving an earlier failure. Use this
+name when the callback has no expected failure case, such as formatting a
+validated number. It is an alias of `bind`: this distinction documents the
+callback's intent, and is not enforced at runtime.
+
+>lua
+  local result = require("cds.result")
+  local value, err = result.map(false, nil, tostring)
+  assert(value == "false" and err == nil)
+<
 
 ------------------------------------------------------------------------------
                                                           *cds.result.context()*
                    `result.context`({value}, {err}, {prefix})
-Passes the value through untouched and puts `prefix` in front of an error,
-so a failure deep in a pipeline says where it was met ('Parse error in "A
-and": ...').
+Add the location or operation that makes an error actionable. A parser may
+know what went wrong but not which setting it was parsing; its caller can
+add that information without changing the successful value. On failure,
+`err` must be a string; include any separator in `prefix`.
+
+>lua
+  local result = require("cds.result")
+  local value, err = result.context(nil, "expected a number", "retries: ")
+  assert(value == nil and err == "retries: expected a number")
+  assert(result.context(3, nil, "retries: ") == 3)
+<
 Parameters ~
 {value} `(T?)`
 {err} `(string?)`
@@ -219,8 +407,24 @@ Return ~
 ------------------------------------------------------------------------------
                                                          *cds.result.traverse()*
                        `result.traverse`({values}, {fn})
-Runs fn(value, index) over every item, stopping at the first refusal, and
-answers the list of answers, or nil and that error.
+Build a list only if every item can be transformed successfully. Call
+`fn(value, index)` in order and stop at the first nil result, returning
+`nil, err` instead of a partial list. An empty input succeeds with `{}`.
+Earlier callback effects are not undone; use pure callbacks when a failed
+batch must leave nothing changed.
+
+>lua
+  local result = require("cds.result")
+  local function number(text, i)
+    local n = tonumber(text)
+    if n == nil then return nil, "item " .. i .. ": expected a number" end
+    return n
+  end
+  local values = assert(result.traverse({ "10", "20" }, number))
+  assert(values[1] == 10 and values[2] == 20)
+  local value, err = result.traverse({ "10", "bad", "30" }, number)
+  assert(value == nil and err == "item 2: expected a number")
+<
 Parameters ~
 {values} `(T[])`
 {fn} `(fun(value: T, index: integer): U?, any)`
@@ -231,30 +435,38 @@ Return ~
 
 ==============================================================================
                                                                     *cds.module*
-Every module of the library returns through |cds.module.wrap()|, so a
-name a module does not have fails at the call with the module's name and
-the key in words, where plain Lua says "attempt to call field 'filter_mop'
-(a nil value)" somewhere later. The usual cause is a cds-lua older than the
-code calling it, and the message says so.
+Give callers a useful error when they call an API that is missing from an
+installed library. `wrap` makes the error identify both the module and the
+requested name, helping distinguish a typo from an outdated dependency.
+Every module in cds-lua-fp except this one uses it.
 
-A lookup on a module therefore answers a function for every name. A test
-for a name's presence asks |cds.module.is_fallback()| of what the lookup
-answered, as cds.needs does; `rawget` would miss a module whose names come
-through a metatable of its own, as vim.async's do.
+Wrap a module when returning its public table: >lua
 
-A module ends with >lua
-
-  return require("cds.module").wrap("fp", M)
+  local module = require("cds.module")
+  local api = module.wrap("example", { greet = function() return "hello" end })
+  assert(api.greet() == "hello")
+  local ok, err = pcall(function() api.greet_missing() end)
+  assert(not ok and err:find('cds.example has no "greet_missing"', 1, true))
 <
-and declares `---@class cds.fp` above its table, so the language server
-carries the module's type to every caller and a misspelt name is an
-undefined field at edit time. The named function is the form: a `__call`
-metamethod in its place loses the type.
+A missing lookup returns a fallback function; the error occurs when that
+function is called. Consequently, `if api.some_name then` cannot test
+whether an API exists. Use |cds.module.is_fallback()| or |cds.needs.check()|
+for that purpose. `wrap` replaces the table's metatable, so use it on plain
+module tables, not tables whose existing metamethods must be preserved.
 
 ------------------------------------------------------------------------------
                                                              *cds.module.wrap()*
                           `module.wrap`({name}, {mod})
-Puts the fallback behind the module and answers the module.
+Attach missing-API diagnostics to a module table and return the same table.
+Existing fields keep their values. `name` is the suffix after `cds.`, such
+as `fp` or `html.blocks`, and is used in the error message.
+
+>lua
+  local module = require("cds.module")
+  local api = { version = 1 }
+  assert(module.wrap("example", api) == api)
+  assert(api.version == 1)
+<
 Parameters ~
 {name} `(string)` "fp", "html.blocks"
 {mod} `(T)`
@@ -264,8 +476,17 @@ Return ~
 ------------------------------------------------------------------------------
                                                       *cds.module.is_fallback()*
                          `module.is_fallback`({value})
-Whether a value is one of the fallbacks: what a module answered for a
-name it does not have.
+Identify a function created by `wrap` for a missing field. Use this after a
+normal lookup so capability checks work with wrapped modules. For a general
+presence check, also reject nil, which an unwrapped module may return.
+
+>lua
+  local module = require("cds.module")
+  local api = module.wrap("example", { run = function() end })
+  assert(not module.is_fallback(api.run))
+  assert(module.is_fallback(api.missing))
+  assert(not module.is_fallback(nil))
+<
 Parameters ~
 {value} `(any)`
 Return ~
@@ -274,36 +495,38 @@ Return ~
 
 ==============================================================================
                                                                      *cds.needs*
-A plugin takes the library as a lazy.nvim dependency, declared in the
-`lazy.lua` at its root: >lua
+Check required library APIs before a plugin starts, so an outdated
+installation produces one actionable message instead of failing later in
+an unrelated command. Declare the names the plugin uses, then run `check`
+at its entry point. This checks availability, not function signatures or
+behavior, so it complements version constraints and tests.
 
-  return {
-    "cds-io/<plugin>",
-    dependencies = { { "cds-io/cds-lua", lazy = true } },
-  }
+For example, check the requirements of a plugin that transforms lists: >lua
+
+  local needs = require("cds.needs")
+  local capabilities = { fp = { "map", "filter" }, result = { "bind" } }
+  local problem = needs.check("example.nvim", capabilities)
+  assert(problem == nil) -- these APIs are available in this library
+
+  problem = needs.check("example.nvim", { fp = { "not_an_api" } })
+  assert(problem:find("fp.not_an_api", 1, true))
+  assert(problem:find("cds-io/cds-lua-fp", 1, true))
 <
-The dependency tracks `main` with no pin, so one `:Lazy update` moves every
-plugin that depends on it together, and one copy of `lua/cds/` is on the
-runtimepath, so `require("cds.fp")` has one file to resolve to.
+In a plugin entry point, report a non-nil problem and return before
+registering commands or autocommands. Load `cds.needs` with `pcall(require,
+"cds.needs")` there too: an installation too old to include this module
+cannot check its own capabilities.
 
-What the plugin calls is declared in `lua/<plugin>/needs.lua`, by module
-and name: a function, or a table such as `http.status`. >lua
+Keep the declaration in one module, such as `lua/example/needs.lua`, and
+use the same table with |cds.needs.strict()| in the test harness. This catches
+new library calls that were added without updating the startup check.
+Declare table-valued APIs, such as `http.status`, by their top-level name.
 
-  ---@type cds.needs.Capabilities
-  return {
-    fp = { "map", "filter" },
-    http = { "request", "status" },
-  }
-<
-The plugin's entry runs |cds.needs.check()| first and refuses the whole
-plugin, in one message naming the remedy, when the libraries installed lack
-a name; the message names the library each name belongs to, this rock for
-`fp`, `result`, `module` and `needs`, cds-lua for the rest. Its spec harness wraps the declared modules through
-|cds.needs.strict()|, so a call the declaration leaves out fails the spec
-in words, and the declaration stays what the code uses.
-
-The one check a plugin keeps for itself is whether this module loads: a
-library too old to carry it fails that `require`, which is the answer.
+Install cds-lua-fp directly for the pure Lua helpers. A Neovim plugin using
+APIs from cds-lua should declare that library as a dependency; it brings
+cds-lua-fp with it. Missing-API messages name the library to install or
+update: cds-lua-fp for `fp`, `result`, `module`, and `needs`; cds-lua for the
+remaining modules.
 
 ------------------------------------------------------------------------------
 Alias ~
@@ -312,9 +535,16 @@ Alias ~
 ------------------------------------------------------------------------------
                                                            *cds.needs.missing()*
                         `needs.missing`({capabilities})
-Lists the capabilities the library present lacks, as "fp.filter" names,
-modules in name order and each in declaration order: a name the module has
-nothing under, or every name of a module that does not load.
+Return the missing APIs as qualified names for custom diagnostics. Modules
+are checked in sorted order, and names within a module retain declaration
+order. If a module cannot load, all its declared names are missing. Any
+non-nil value counts as present unless it is a `cds.module` fallback.
+
+>lua
+  local needs = require("cds.needs")
+  local missing = needs.missing({ fp = { "map", "not_an_api" } })
+  assert(#missing == 1 and missing[1] == "fp.not_an_api")
+<
 Parameters ~
 {capabilities} `(cds.needs.Capabilities)`
 Return ~
@@ -323,11 +553,18 @@ Return ~
 ------------------------------------------------------------------------------
                                                              *cds.needs.check()*
                     `needs.check`({plugin}, {capabilities})
-Answers nil when everything declared is here; otherwise one sentence for the
-reader, naming the plugin, the missing functions and the remedy, by the
-library each function belongs to: "a.nvim needs cds-lua-fp with
-fp.filter_mop and cds-lua with redraw.places: install or update
-cds-io/cds-lua-fp and cds-io/cds-lua".
+Return nil when all declared APIs are available. Otherwise, return one
+message naming the plugin, the missing APIs, and the libraries to install
+or update. The caller owns how that message is displayed; this function
+does not notify, throw, or disable the plugin itself.
+
+>lua
+  local needs = require("cds.needs")
+  assert(needs.check("example.nvim", { fp = { "map" } }) == nil)
+  local problem = needs.check("example.nvim", { fp = { "not_an_api" } })
+  assert(problem == "example.nvim needs cds-lua-fp with fp.not_an_api: "
+    .. "install or update cds-io/cds-lua-fp")
+<
 Parameters ~
 {plugin} `(string)` truth-table.nvim
 {capabilities} `(cds.needs.Capabilities)`
@@ -337,15 +574,26 @@ Return ~
 ------------------------------------------------------------------------------
                                                             *cds.needs.strict()*
                     `needs.strict`({plugin}, {capabilities})
-Replaces each declared module, in package.loaded, with a proxy that holds
-nothing itself: a declared name reads from the real module, so a seam a spec
-replaces there (`proc.runner`) is what the plugin's own code reads; any
-other name raises, naming the plugin whose declaration is short; a write
-goes to the real module, since a plugin setting a hook the module leaves nil
-(`http.trace`) is not declaring a name it reads. The library's own modules
-pass through, since they use each other beyond the declaration; a module the
-tier cannot load (one that needs `vim`, under plain busted) is left alone.
-For a spec harness, before any spec runs.
+Catch undeclared library usage during tests. Before loading plugin modules,
+call this with the same capabilities used by the startup check. It replaces
+declared modules in `package.loaded` with proxies that reject reads of
+undeclared names. Modules absent from the declaration are not intercepted.
+
+Writes pass through to the original module, allowing tests to replace hooks.
+Calls originating inside `lua/cds/` are exempt, since the library's own
+implementation may need additional APIs. Modules that cannot load are
+skipped. Run this in a test process, not in normal plugin startup: the
+proxies persist for the lifetime of that process.
+
+>lua
+  local needs = require("cds.needs")
+  local capabilities = { fp = { "map" } }
+  needs.strict("example.nvim", capabilities)
+  local fp = require("cds.fp") -- require after installing the proxies
+  assert(fp.map({ 2 }, function(n) return n * 2 end)[1] == 4)
+  local ok, err = pcall(function() return fp.filter end)
+  assert(not ok and err:find("without declaring it", 1, true))
+<
 Parameters ~
 {plugin} `(string)`
 {capabilities} `(cds.needs.Capabilities)`

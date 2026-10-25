@@ -1,36 +1,65 @@
 ---@tag cds-lua-fp
 ---@text
---- cds-lua-fp is a small functional vocabulary for Lua: |cds.fp| for lists,
---- |cds.result| for Lua's own error convention (a function answers `value`,
---- or `nil, err`, and only nil fails), |cds.module|, a fallback a module
---- returns through so that a name it does not have fails at the call, in
---- words, and |cds.needs|, a check a program runs at startup against the
---- libraries installed. The four files use nothing beyond the standard
---- library, so they run on Lua 5.1 and up, under LuaJIT and inside Neovim
---- alike.
+--- cds-lua-fp provides reusable list operations and error propagation for Lua
+--- 5.1 and later, including LuaJIT and Neovim. It has no dependencies outside
+--- the Lua standard library.
 ---
---- Install it as a rock, `luarocks install cds-lua-fp`, or as a lazy.nvim
---- plugin, `{ "cds-io/cds-lua-fp", lazy = true }`; cds-lua, a Neovim library
---- built on it, declares it as a dependency.
+--- Use |cds.fp| to express transformations such as selecting records, extracting
+--- fields, and removing duplicates without writing a loop for each operation.
+--- Use |cds.result| to chain operations that return `value` or `nil, err` and
+--- handle the first failure in one place. For plugins that share the library,
+--- |cds.needs| checks required APIs at startup, and |cds.module| makes calls to
+--- missing APIs report the module and name involved.
 ---
+--- Install with `luarocks install cds-lua-fp`, or add
+--- `{ "cds-io/cds-lua-fp", lazy = true }` to a lazy.nvim configuration.
+--- The Neovim library cds-lua also declares it as a dependency.
 ---@toc
 
 ---@tag cds.fp
 ---@toc_entry Lists
 ---@text
---- The list helpers: map, filter, reduce, find, find_map, any, all, set and
---- unique. They exist because pure Lua 5.1 builds none of these in, and code
---- meant to run outside Neovim has no vim.iter. A list is a sequence (items at 1..n,
---- no holes), read with ipairs. Map, filter and unique return fresh lists,
---- set a fresh table, reduce the final accumulator, find the item, any and
---- all a boolean; none modifies the input list. The function argument comes
---- last, so one written out over several lines reads as a block.
+--- Use these helpers when a loop's purpose is a standard list operation:
+--- selecting, transforming, searching, or accumulating. Naming the operation
+--- lets the callback focus on the application rule. They work in plain Lua
+--- as well as Neovim.
+---
+--- For example, select enabled jobs and extract their names: >lua
+---
+---   local fp = require("cds.fp")
+---   local jobs = {
+---     { name = "build", enabled = true },
+---     { name = "deploy", enabled = false },
+---   }
+---   local enabled = fp.filter(jobs, function(job) return job.enabled end)
+---   local names = fp.map(enabled, function(job) return job.name end)
+---   assert(#names == 1 and names[1] == "build")
+---   assert(#jobs == 2) -- the input list is unchanged
+--- <
+--- Inputs are dense sequences indexed from 1: traversal uses `ipairs`, which
+--- stops at the first missing index. Helpers do not mutate the input list;
+--- returned records are the original objects, not deep copies. Callbacks may
+--- still mutate those objects, so keep them pure when sharing input data.
+---
+--- Use `map` when every input produces a value, `filter_map` when some inputs
+--- should be omitted, and |cds.result.traverse()| when a failed conversion
+--- should reject the whole list. Callback arguments come last so multiline
+--- functions sit directly below the operation they define.
 ---@class cds.fp
 local M = {}
 
---- Builds the list of fn(item, index) for each item, in order. A nil result is
---- an error: it would leave a hole, and ipairs would stop reading the list
---- there.
+--- Transform every item while retaining its position. Use this to extract a
+--- field or convert a list to another representation. A nil callback result
+--- raises an error identifying the item: silently creating a hole would make
+--- later `ipairs` loops stop early. False is a valid result.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local names = fp.map({ { name = "Ada" }, { name = "Lin" } }, function(user)
+---     return user.name
+---   end)
+---   assert(table.concat(names, ", ") == "Ada, Lin")
+--- <
 ---@generic T, U
 ---@param list T[]
 ---@param fn fun(item: T, index: integer): U
@@ -47,7 +76,14 @@ function M.map(list, fn)
   return out
 end
 
---- Keeps the items for which keep(item, index) is true, in order.
+--- Select items without changing their order or representation. Keep an item
+--- when `keep(item, index)` is truthy; return a fresh list of those items.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local positive = fp.filter({ -1, 0, 2, 3 }, function(n) return n > 0 end)
+---   assert(#positive == 2 and positive[1] == 2 and positive[2] == 3)
+--- <
 ---@generic T
 ---@param list T[]
 ---@param keep fun(item: T, index: integer): any
@@ -62,9 +98,18 @@ function M.filter(list, keep)
   return out
 end
 
---- Folds the items into one value, left to right: the result of fn(value, item,
---- index) is the value the next item meets, starting from `initial`, which is
---- also what an empty list gives.
+--- Combine a list into one result, such as a total or lookup table. Start with
+--- `initial`; each callback receives the previous accumulator, the item, and
+--- its index. Return the final accumulator, or `initial` for an empty list.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local total = fp.reduce({ 10, 20, 30 }, 0, function(sum, price)
+---     return sum + price
+---   end)
+---   assert(total == 60)
+---   assert(fp.reduce({}, 0, function() error("not called") end) == 0)
+--- <
 ---@generic T, A
 ---@param list T[]
 ---@param initial A
@@ -78,9 +123,17 @@ function M.reduce(list, initial, fn)
   return value
 end
 
---- Finds the first item for which test(item, index) is truthy and answers it
---- with its index; nil when none is. The lists here hold nodes, strings and
---- records, never false, so a falsy answer means no item.
+--- Locate the first matching item without scanning the rest of the list.
+--- Return the item and its index, or nil when no item matches. Test the index
+--- or compare the item with nil: false can itself be a matching item.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local item, index = fp.find({ true, false, true }, function(v)
+---     return v == false
+---   end)
+---   assert(item == false and index == 2)
+--- <
 ---@generic T
 ---@param list T[]
 ---@param test fun(item: T, index: integer): any
@@ -94,9 +147,17 @@ function M.find(list, test)
   end
 end
 
---- Answers the first non-nil fn(item, index), stopping there; nil when every
---- item answers nil. One pass that finds and transforms at once, for a chain of
---- parsers tried in order: the first that reads the line gives the record.
+--- Try alternatives in order and return the first non-nil conversion. Use
+--- this for parsers or lookup strategies where nil means "try the next one".
+--- Stop immediately on a result, including false; return nil if none succeeds.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local n = fp.find_map({ "unknown", "42", "99" }, function(text)
+---     return tonumber(text)
+---   end)
+---   assert(n == 42)
+--- <
 ---@generic T, U
 ---@param list T[]
 ---@param fn fun(item: T, index: integer): U?
@@ -110,8 +171,16 @@ function M.find_map(list, fn)
   end
 end
 
---- Joins the lists fn(item, index) answers, in order: a map whose answers are
---- lists, flattened one level.
+--- Expand each item into zero or more items and concatenate the resulting
+--- lists in input order. Use this when one record contributes several output
+--- records; the callback must return a list, with `{}` contributing nothing.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local files = fp.flat_map({ { "a.lua", "b.lua" }, {}, { "c.lua" } },
+---     function(group) return group end)
+---   assert(table.concat(files, ",") == "a.lua,b.lua,c.lua")
+--- <
 ---@generic T, U
 ---@param list T[]
 ---@param fn fun(item: T, index: integer): U[]
@@ -126,8 +195,16 @@ function M.flat_map(list, fn)
   return out
 end
 
---- Lists the keys of a table, in no particular order; sort it when the order
---- matters.
+--- Collect a table's keys so they can be filtered, sorted, or displayed.
+--- Their order is unspecified because collection uses `pairs`; sort the result
+--- when producing stable output.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local names = fp.keys({ build = true, test = true })
+---   table.sort(names)
+---   assert(table.concat(names, ",") == "build,test")
+--- <
 ---@generic K
 ---@param t table<K, any>
 ---@return K[]
@@ -139,9 +216,17 @@ function M.keys(t)
   return out
 end
 
---- Calls fn(item, index) for each item, in order, for what it does; the answers
---- are dropped. Where map builds a list, each performs an action per item: a
---- cursor set in every window showing a buffer.
+--- Perform an action for each item in order, ignoring callback return values.
+--- Use this when the action matters and no output list is needed.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local written = {}
+---   fp.each({ "first", "second" }, function(line)
+---     written[#written + 1] = line -- stand-in for an output sink
+---   end)
+---   assert(table.concat(written, "\n") == "first\nsecond")
+--- <
 ---@generic T
 ---@param list T[]
 ---@param fn fun(item: T, index: integer)
@@ -151,9 +236,18 @@ function M.each(list, fn)
   end
 end
 
---- Keeps every non-nil fn(item, index), in order. One pass that filters and
---- transforms at once, for a reading that keeps what it can parse: the heading
---- each line carries, for the lines that carry one.
+--- Convert the items that are relevant and omit the rest in one pass. Keep
+--- each non-nil callback result, including false, in input order. Use this
+--- when an unsuccessful conversion should be skipped rather than fail the
+--- whole operation.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local numbers = fp.filter_map({ "10", "skip", "20" }, function(text)
+---     return tonumber(text)
+---   end)
+---   assert(#numbers == 2 and numbers[1] == 10 and numbers[2] == 20)
+--- <
 ---@generic T, U
 ---@param list T[]
 ---@param fn fun(item: T, index: integer): U?
@@ -169,7 +263,14 @@ function M.filter_map(list, fn)
   return out
 end
 
---- Does test(item, index) hold for some item? Stops at the first.
+--- Check whether at least one item satisfies a condition. Stop at the first
+--- truthy callback result; an empty list returns false.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   assert(fp.any({ 0, 5, 0 }, function(count) return count > 0 end))
+---   assert(not fp.any({}, function() return true end))
+--- <
 ---@generic T
 ---@param list T[]
 ---@param test fun(item: T, index: integer): any
@@ -183,8 +284,15 @@ function M.any(list, test)
   return false
 end
 
---- Does test(item, index) hold for every item? Stops at the first that
---- fails; true for an empty list.
+--- Check whether every item satisfies a condition. Stop at the first falsy
+--- callback result. An empty list returns true because no item violates the
+--- condition; check the length separately if at least one item is required.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   assert(fp.all({ 2, 4 }, function(n) return n % 2 == 0 end))
+---   assert(not fp.all({ 2, 3 }, function(n) return n % 2 == 0 end))
+--- <
 ---@generic T
 ---@param list T[]
 ---@param test fun(item: T, index: integer): any
@@ -219,7 +327,15 @@ local function key_of(name, key, item, index)
   return found
 end
 
---- Builds a set of the items: a table of each one's key to true.
+--- Build a lookup table for repeated membership checks. Each item, or its
+--- `key(item, index)`, becomes a table key with value true. Duplicate keys
+--- collapse into one entry. A nil key raises an error identifying the item.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local allowed = fp.set({ "read", "write", "read" })
+---   assert(allowed.read and allowed.write and allowed.delete == nil)
+--- <
 ---@generic T
 ---@param list T[]
 ---@param key? fun(item: T, index: integer): any   -- the item itself without one
@@ -232,8 +348,17 @@ function M.set(list, key)
   return out
 end
 
---- Keeps the items whose key has not appeared before, in order: the first of
---- each.
+--- Remove duplicates while preserving the first item for each key and its
+--- position relative to other retained items. Supply `key` to compare records
+--- by an identifier; without it, items themselves are the keys. A nil key
+--- raises an error identifying the item.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local records = { { id = "a", n = 1 }, { id = "a", n = 2 }, { id = "b" } }
+---   local first = fp.unique(records, function(record) return record.id end)
+---   assert(#first == 2 and first[1] == records[1] and first[2] == records[3])
+--- <
 ---@generic T
 ---@param list T[]
 ---@param key? fun(item: T, index: integer): any   -- the item itself without one

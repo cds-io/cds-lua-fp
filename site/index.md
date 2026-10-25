@@ -6,28 +6,44 @@ permalink: /
 
 # cds-lua-fp
 
-A small functional vocabulary for Lua, 5.1 and up: `cds.fp` for lists,
-`cds.result` for Lua's own error convention, `cds.module`, a fallback a module
-returns through so a name it does not have fails at the call, in words, and
-`cds.needs`, a check a program runs at startup for the functions it declares.
+Reusable list transformations and error propagation for Lua 5.1 and later,
+including LuaJIT and Neovim. The library depends only on the Lua standard library.
+
+Use `cds.fp` to express what a loop does: select records, extract fields,
+find a match, or remove duplicates. Use `cds.result` when successive operations
+can fail and you want to handle the first error once.
 
 ```lua
-local fp = require("cds.fp")
 local result = require("cds.result")
 
-local titles = fp.map(entries, function(entry)
-  return entry.title
-end)
-local parsed, err = result.bind(read(path), nil, parse)
+local function number(text)
+  local n = tonumber(text)
+  if n == nil then return nil, "expected a number" end
+  return n
+end
+
+local function positive(n)
+  if n <= 0 then return nil, "must be positive" end
+  return n
+end
+
+local value, err = number("3")
+value, err = result.bind(value, err, positive)
+assert(value == 3 and err == nil)
+-- With "oops", positive is skipped and err stays "expected a number".
 ```
 
-Every function answers `value` or `nil, err`, and only `nil` fails, so `false`
-and `0` are valid answers. `fp.map` refuses a `nil` answer, since a hole would
-stop `ipairs` reading the list; `fp.set` and `fp.unique` refuse a `nil` key,
-naming the item. The function argument comes last, so one written out over
-several lines reads as a block under the call. Every function carries
-language-server annotations, generic over the item type, so `fp.map` over a
-`T[]` answers a `U[]` in the editor.
+`cds.result` uses `value` for success and `nil, err` for failure; `false` and `0`
+are successful values. Keep both returns in locals before calling `bind`:
+Lua discards additional return values from a call followed by more arguments.
+The list helpers use ordinary list and scalar results, not this error convention.
+For example, `fp.map` creates a new list and raises if a callback returns nil,
+while `fp.filter_map` omits nil results intentionally.
+
+For plugins sharing the library, `cds.needs` checks required API names at startup
+so users get an actionable update message. `cds.module` supplies diagnostics
+when an absent API is called. Every public helper has language-server annotations
+and examples in the generated reference.
 
 ## Installing
 
