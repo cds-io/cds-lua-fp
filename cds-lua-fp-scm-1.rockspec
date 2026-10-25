@@ -16,6 +16,7 @@ description = {
     declares. Pure Lua 5.1 and up, with language-server annotations throughout.
   ]],
   homepage = "https://github.com/cds-io/cds-lua-fp",
+  license = "MIT",
 }
 dependencies = {
   "lua >= 5.1",

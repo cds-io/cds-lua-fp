@@ -49,3 +49,7 @@ make doc       # doc/cds-lua-fp.txt, with mini.doc on the runtimepath
 ```
 
 CI runs the specs on Lua 5.1, 5.4 and LuaJIT.
+
+## Licence
+
+MIT; see LICENSE.
