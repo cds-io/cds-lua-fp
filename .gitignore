@@ -1,2 +1,4 @@
 # :helptags output; the plugin manager builds it on install
 doc/tags
+# the archive luarocks upload packs here before sending it
+*.src.rock
