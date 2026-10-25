@@ -1,32 +1,40 @@
 ---@tag cds.module
 ---@toc_entry Names a module does not have
 ---@text
---- Every module of the library returns through |cds.module.wrap()|, so a
---- name a module does not have fails at the call with the module's name and
---- the key in words, where plain Lua says "attempt to call field 'filter_mop'
---- (a nil value)" somewhere later. The usual cause is a cds-lua older than the
---- code calling it, and the message says so.
+--- Give callers a useful error when they call an API that is missing from an
+--- installed library. `wrap` makes the error identify both the module and the
+--- requested name, helping distinguish a typo from an outdated dependency.
+--- Every module in cds-lua-fp except this one uses it.
 ---
---- A lookup on a module therefore answers a function for every name. A test
---- for a name's presence asks |cds.module.is_fallback()| of what the lookup
---- answered, as cds.needs does; `rawget` would miss a module whose names come
---- through a metatable of its own, as vim.async's do.
+--- Wrap a module when returning its public table: >lua
 ---
---- A module ends with >lua
----
----   return require("cds.module").wrap("fp", M)
+---   local module = require("cds.module")
+---   local api = module.wrap("example", { greet = function() return "hello" end })
+---   assert(api.greet() == "hello")
+---   local ok, err = pcall(function() api.greet_missing() end)
+---   assert(not ok and err:find('cds.example has no "greet_missing"', 1, true))
 --- <
---- and declares `---@class cds.fp` above its table, so the language server
---- carries the module's type to every caller and a misspelt name is an
---- undefined field at edit time. The named function is the form: a `__call`
---- metamethod in its place loses the type.
+--- A missing lookup returns a fallback function; the error occurs when that
+--- function is called. Consequently, `if api.some_name then` cannot test
+--- whether an API exists. Use |cds.module.is_fallback()| or |cds.needs.check()|
+--- for that purpose. `wrap` replaces the table's metatable, so use it on plain
+--- module tables, not tables whose existing metamethods must be preserved.
 ---@class cds.module
 local M = {}
 
 -- every fallback handed out, weakly, so is_fallback knows them
 local fallbacks = setmetatable({}, { __mode = "k" })
 
---- Puts the fallback behind the module and answers the module.
+--- Attach missing-API diagnostics to a module table and return the same table.
+--- Existing fields keep their values. `name` is the suffix after `cds.`, such
+--- as `fp` or `html.blocks`, and is used in the error message.
+---
+--- >lua
+---   local module = require("cds.module")
+---   local api = { version = 1 }
+---   assert(module.wrap("example", api) == api)
+---   assert(api.version == 1)
+--- <
 ---@generic T: table
 ---@param name string  -- "fp", "html.blocks"
 ---@param mod T
@@ -49,8 +57,17 @@ function M.wrap(name, mod)
   })
 end
 
---- Whether a value is one of the fallbacks: what a module answered for a
---- name it does not have.
+--- Identify a function created by `wrap` for a missing field. Use this after a
+--- normal lookup so capability checks work with wrapped modules. For a general
+--- presence check, also reject nil, which an unwrapped module may return.
+---
+--- >lua
+---   local module = require("cds.module")
+---   local api = module.wrap("example", { run = function() end })
+---   assert(not module.is_fallback(api.run))
+---   assert(module.is_fallback(api.missing))
+---   assert(not module.is_fallback(nil))
+--- <
 ---@param value any
 ---@return boolean
 function M.is_fallback(value)

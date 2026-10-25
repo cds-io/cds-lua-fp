@@ -1,36 +1,38 @@
 ---@tag cds.needs
 ---@toc_entry Taking the library
 ---@text
---- A plugin takes the library as a lazy.nvim dependency, declared in the
---- `lazy.lua` at its root: >lua
+--- Check required library APIs before a plugin starts, so an outdated
+--- installation produces one actionable message instead of failing later in
+--- an unrelated command. Declare the names the plugin uses, then run `check`
+--- at its entry point. This checks availability, not function signatures or
+--- behavior, so it complements version constraints and tests.
 ---
----   return {
----     "cds-io/<plugin>",
----     dependencies = { { "cds-io/cds-lua", lazy = true } },
----   }
+--- For example, check the requirements of a plugin that transforms lists: >lua
+---
+---   local needs = require("cds.needs")
+---   local capabilities = { fp = { "map", "filter" }, result = { "bind" } }
+---   local problem = needs.check("example.nvim", capabilities)
+---   assert(problem == nil) -- these APIs are available in this library
+---
+---   problem = needs.check("example.nvim", { fp = { "not_an_api" } })
+---   assert(problem:find("fp.not_an_api", 1, true))
+---   assert(problem:find("cds-io/cds-lua-fp", 1, true))
 --- <
---- The dependency tracks `main` with no pin, so one `:Lazy update` moves every
---- plugin that depends on it together, and one copy of `lua/cds/` is on the
---- runtimepath, so `require("cds.fp")` has one file to resolve to.
+--- In a plugin entry point, report a non-nil problem and return before
+--- registering commands or autocommands. Load `cds.needs` with `pcall(require,
+--- "cds.needs")` there too: an installation too old to include this module
+--- cannot check its own capabilities.
 ---
---- What the plugin calls is declared in `lua/<plugin>/needs.lua`, by module
---- and name: a function, or a table such as `http.status`. >lua
+--- Keep the declaration in one module, such as `lua/example/needs.lua`, and
+--- use the same table with |cds.needs.strict()| in the test harness. This catches
+--- new library calls that were added without updating the startup check.
+--- Declare table-valued APIs, such as `http.status`, by their top-level name.
 ---
----   ---@type cds.needs.Capabilities
----   return {
----     fp = { "map", "filter" },
----     http = { "request", "status" },
----   }
---- <
---- The plugin's entry runs |cds.needs.check()| first and refuses the whole
---- plugin, in one message naming the remedy, when the libraries installed lack
---- a name; the message names the library each name belongs to, this rock for
---- `fp`, `result`, `module` and `needs`, cds-lua for the rest. Its spec harness wraps the declared modules through
---- |cds.needs.strict()|, so a call the declaration leaves out fails the spec
---- in words, and the declaration stays what the code uses.
----
---- The one check a plugin keeps for itself is whether this module loads: a
---- library too old to carry it fails that `require`, which is the answer.
+--- Install cds-lua-fp directly for the pure Lua helpers. A Neovim plugin using
+--- APIs from cds-lua should declare that library as a dependency; it brings
+--- cds-lua-fp with it. Missing-API messages name the library to install or
+--- update: cds-lua-fp for `fp`, `result`, `module`, and `needs`; cds-lua for the
+--- remaining modules.
 
 local fp = require("cds.fp")
 local module = require("cds.module")
@@ -65,9 +67,16 @@ local function has(mod, fn)
   return value ~= nil and not module.is_fallback(value)
 end
 
---- Lists the capabilities the library present lacks, as "fp.filter" names,
---- modules in name order and each in declaration order: a name the module has
---- nothing under, or every name of a module that does not load.
+--- Return the missing APIs as qualified names for custom diagnostics. Modules
+--- are checked in sorted order, and names within a module retain declaration
+--- order. If a module cannot load, all its declared names are missing. Any
+--- non-nil value counts as present unless it is a `cds.module` fallback.
+---
+--- >lua
+---   local needs = require("cds.needs")
+---   local missing = needs.missing({ fp = { "map", "not_an_api" } })
+---   assert(#missing == 1 and missing[1] == "fp.not_an_api")
+--- <
 ---@param capabilities cds.needs.Capabilities
 ---@return string[]
 function M.missing(capabilities)
@@ -85,11 +94,18 @@ end
 -- The modules this rock carries; every other cds module is cds-lua's.
 local ROCK = { fp = true, result = true, module = true, needs = true }
 
---- Answers nil when everything declared is here; otherwise one sentence for the
---- reader, naming the plugin, the missing functions and the remedy, by the
---- library each function belongs to: "a.nvim needs cds-lua-fp with
---- fp.filter_mop and cds-lua with redraw.places: install or update
---- cds-io/cds-lua-fp and cds-io/cds-lua".
+--- Return nil when all declared APIs are available. Otherwise, return one
+--- message naming the plugin, the missing APIs, and the libraries to install
+--- or update. The caller owns how that message is displayed; this function
+--- does not notify, throw, or disable the plugin itself.
+---
+--- >lua
+---   local needs = require("cds.needs")
+---   assert(needs.check("example.nvim", { fp = { "map" } }) == nil)
+---   local problem = needs.check("example.nvim", { fp = { "not_an_api" } })
+---   assert(problem == "example.nvim needs cds-lua-fp with fp.not_an_api: "
+---     .. "install or update cds-io/cds-lua-fp")
+--- <
 ---@param plugin string  -- truth-table.nvim
 ---@param capabilities cds.needs.Capabilities
 ---@return string|nil
@@ -127,15 +143,26 @@ local function in_library(info)
   return info ~= nil and info.source:find("lua/cds/", 1, true) ~= nil
 end
 
---- Replaces each declared module, in package.loaded, with a proxy that holds
---- nothing itself: a declared name reads from the real module, so a seam a spec
---- replaces there (`proc.runner`) is what the plugin's own code reads; any
---- other name raises, naming the plugin whose declaration is short; a write
---- goes to the real module, since a plugin setting a hook the module leaves nil
---- (`http.trace`) is not declaring a name it reads. The library's own modules
---- pass through, since they use each other beyond the declaration; a module the
---- tier cannot load (one that needs `vim`, under plain busted) is left alone.
---- For a spec harness, before any spec runs.
+--- Catch undeclared library usage during tests. Before loading plugin modules,
+--- call this with the same capabilities used by the startup check. It replaces
+--- declared modules in `package.loaded` with proxies that reject reads of
+--- undeclared names. Modules absent from the declaration are not intercepted.
+---
+--- Writes pass through to the original module, allowing tests to replace hooks.
+--- Calls originating inside `lua/cds/` are exempt, since the library's own
+--- implementation may need additional APIs. Modules that cannot load are
+--- skipped. Run this in a test process, not in normal plugin startup: the
+--- proxies persist for the lifetime of that process.
+---
+--- >lua
+---   local needs = require("cds.needs")
+---   local capabilities = { fp = { "map" } }
+---   needs.strict("example.nvim", capabilities)
+---   local fp = require("cds.fp") -- require after installing the proxies
+---   assert(fp.map({ 2 }, function(n) return n * 2 end)[1] == 4)
+---   local ok, err = pcall(function() return fp.filter end)
+---   assert(not ok and err:find("without declaring it", 1, true))
+--- <
 ---@param plugin string
 ---@param capabilities cds.needs.Capabilities
 function M.strict(plugin, capabilities)
