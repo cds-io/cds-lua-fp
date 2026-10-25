@@ -1,0 +1,11 @@
+title: cds-lua-fp
+description: A small functional vocabulary for Lua, 5.1 and up
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+search_enabled: true
+aux_links:
+  cds-lua-fp on GitHub: https://github.com/cds-io/cds-lua-fp
+  cds-lua-fp on luarocks: https://luarocks.org/modules/cds-amal/cds-lua-fp
+exclude:
+  - README.md

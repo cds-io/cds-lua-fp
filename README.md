@@ -39,7 +39,9 @@ As a lazy.nvim plugin, with no luarocks on the machine:
 
 [cds-lua](https://github.com/cds-io/cds-lua), a Neovim library built on it,
 declares it as a dependency, so a plugin that takes cds-lua has it. Inside
-Neovim, `:help cds-lua-fp` is the manual.
+Neovim, `:help cds-lua-fp` is the manual; the reference site,
+[cds-io.github.io/cds-lua-fp](https://cds-io.github.io/cds-lua-fp/), has one
+page per module from the same annotations.
 
 ## Developing
 
