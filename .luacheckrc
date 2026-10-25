@@ -6,3 +6,6 @@ max_line_length = 120
 files["spec/"] = { std = "max+busted" }
 -- the help generator runs inside Neovim with mini.doc on the runtimepath
 files["spec/minidoc.lua"] = { read_globals = { "vim", "MiniDoc" } }
+-- the site generator and its server lookup run inside Neovim too
+files["spec/site.lua"] = { read_globals = { "vim" } }
+files["spec/luals.lua"] = { read_globals = { "vim" } }

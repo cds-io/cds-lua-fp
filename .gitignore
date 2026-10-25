@@ -2,3 +2,6 @@
 doc/tags
 # the archive luarocks upload packs here before sending it
 *.src.rock
+
+# the reference site's generated pages (make site); the front page is committed
+site/modules/

@@ -12,7 +12,7 @@ NVIM ?= nvim
 # lazy installed, which carries it.
 MINIDOC ?= $(firstword $(wildcard ../mini.doc $(HOME)/.local/share/nvim/lazy/mini.doc $(HOME)/.local/share/nvim/lazy/mini.nvim))
 
-.PHONY: all check test lint typecheck doc doc-check
+.PHONY: all check test lint typecheck doc doc-check site
 
 all: check
 
@@ -25,6 +25,7 @@ lint: ## stylua, luacheck and the language server's type check
 	$(STYLUA) --check lua spec
 	$(LUACHECK) lua spec
 	$(MAKE) typecheck
+	$(MAKE) site
 
 # .luarc.json pins Lua 5.1, the lowest version the rock runs on, so the
 # check holds for every version above it.
@@ -36,3 +37,9 @@ doc: ## doc/cds-lua-fp.txt from the annotation blocks, with mini.doc
 
 doc-check: doc ## the committed help file is current
 	git diff --exit-code -- doc/cds-lua-fp.txt
+
+# The reference site's module pages, from the language server's export of the
+# annotations; the Pages workflow builds site/ with Jekyll on every push to
+# main. site/modules/ is generated and stays out of git.
+site: ## site/modules/*.md, one page per module
+	$(NVIM) --headless -u NONE -i NONE -l spec/site.lua
