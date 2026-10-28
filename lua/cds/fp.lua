@@ -375,4 +375,87 @@ function M.unique(list, key)
   return out
 end
 
+-- Lua 5.1 has unpack as a global, 5.2 and later as table.unpack, and
+-- neither has table.pack before 5.2.
+local unpack_values = rawget(table, "unpack") or rawget(_G, "unpack")
+
+--- Every value, nils kept, with their count.
+---@return { n: integer, [integer]: any }
+local function pack(...)
+  return { n = select("#", ...), ... }
+end
+
+--- Remembers one answer per slot, kept while the slot's key still matches.
+--- The slot is the first argument unless `slot` says otherwise (a table slot
+--- is held weakly, so the memo follows the object's life); the key is nil
+--- unless `key` says otherwise, so a slot alone decides. A failure (a nil
+--- first value) is never remembered, and `keep` refuses any other answer
+--- that should not be. Every value the function returned comes back. The
+--- second value returned is the memo: `held(...)` says whether the slot's
+--- answer is in, `forget()` drops them all.
+---
+--- >lua
+---   local fp = require("cds.fp")
+---   local parsed = fp.memoize(function(path) return read(path) end, {
+---     key = function(path) return mtime(path) end,
+---   })
+---   parsed("a.txt")   -- reads
+---   parsed("a.txt")   -- the answer, while a.txt's mtime is the same
+--- <
+---@class cds.fp.MemoizeOptions
+---@field slot? fun(...): any      -- the slot the arguments name; the first argument unless given
+---@field key? fun(...): any       -- what the slot's answer stays valid under; nil unless given
+---@field keep? fun(...): boolean  -- whether an answer (every value returned) is worth remembering
+
+---@class cds.fp.Memo
+---@field held fun(...): boolean   -- whether the arguments' slot holds an answer under their key
+---@field forget fun()             -- drops every remembered answer
+
+---@generic F: function
+---@param fn F
+---@param opts? cds.fp.MemoizeOptions
+---@return F
+---@return cds.fp.Memo
+function M.memoize(fn, opts)
+  opts = opts or {}
+  local slots = setmetatable({}, { __mode = "k" })
+  local NONE = {}
+  local function slot_of(...)
+    local slot = opts.slot and opts.slot(...) or (...)
+    if slot == nil then
+      return NONE
+    end
+    return slot
+  end
+  local function key_of_args(...)
+    if opts.key then
+      return opts.key(...)
+    end
+    return nil
+  end
+  local function call(...)
+    local slot, key = slot_of(...), key_of_args(...)
+    local held = slots[slot]
+    if held and held.key == key then
+      return unpack_values(held.values, 1, held.n)
+    end
+    local values = pack(fn(...))
+    local keep = values[1] ~= nil and (not opts.keep or opts.keep(unpack_values(values, 1, values.n)))
+    slots[slot] = keep and { key = key, values = values, n = values.n } or nil
+    return unpack_values(values, 1, values.n)
+  end
+  return call,
+    {
+      held = function(...)
+        local held = slots[slot_of(...)]
+        return held ~= nil and held.key == key_of_args(...)
+      end,
+      forget = function()
+        for slot in pairs(slots) do
+          slots[slot] = nil
+        end
+      end,
+    }
+end
+
 return require("cds.module").wrap("fp", M)
