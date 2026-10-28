@@ -11,12 +11,23 @@ NVIM ?= nvim
 # standalone nvim-mini/mini.doc beside this checkout (CI), or the mini.nvim
 # lazy installed, which carries it.
 MINIDOC ?= $(firstword $(wildcard ../mini.doc $(HOME)/.local/share/nvim/lazy/mini.doc $(HOME)/.local/share/nvim/lazy/mini.nvim))
+PYTHON ?= python3
 
-.PHONY: all check test lint typecheck doc doc-check site
+.PHONY: all check architecture-check test lint typecheck doc doc-check site
 
 all: check
 
-check: test lint doc-check ## what CI would run
+check: architecture-check test lint doc-check ## what CI would run
+
+# The architecture rules (module size, facade imports, dependency cycles) are
+# checked by lua-spec, a sibling checkout the house keeps to itself, with the
+# settings in lua-spec.toml here. Without the checkout the target says so and
+# passes, so make check holds on any machine.
+LUA_SPEC ?= $(wildcard ../lua-spec)
+
+architecture-check: ## module size, facade imports and cycles, through lua-spec
+	@if [ -n "$(LUA_SPEC)" ]; then PYTHONPATH="$(LUA_SPEC)" $(PYTHON) -m lua_spec.check; \
+	else echo "architecture-check: ../lua-spec not found; skipped"; fi
 
 test: ## the specs under plain busted
 	$(BUSTED)
