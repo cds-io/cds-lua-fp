@@ -458,3 +458,106 @@ describe("fp.find_map", function()
     end))
   end)
 end)
+
+describe("fp.memoize", function()
+  local calls, fn
+  before_each(function()
+    calls = 0
+    fn = function(a, b)
+      calls = calls + 1
+      return a .. ":" .. tostring(b), "note"
+    end
+  end)
+
+  it("remembers one answer per slot, the first argument unless told, and gives every value back", function()
+    local m = fp.memoize(fn)
+    local value, note = m("a", 1)
+    assert.are.equal("a:1", value)
+    assert.are.equal("note", note)
+    assert.are.equal("a:1", m("a", 2))
+    assert.are.equal(1, calls)
+    assert.are.equal("b:3", m("b", 3))
+    assert.are.equal(2, calls)
+  end)
+
+  it("keeps the answer while the key matches and computes again when it changes", function()
+    local revision = { a = 1 }
+    local m = fp.memoize(fn, {
+      key = function(path)
+        return revision[path]
+      end,
+    })
+    assert.are.equal("a:1", m("a", 1))
+    assert.are.equal("a:1", m("a", 2))
+    revision.a = 2
+    assert.are.equal("a:3", m("a", 3))
+    assert.are.equal(2, calls)
+  end)
+
+  it("takes the slot from a function of the arguments", function()
+    local m = fp.memoize(fn, {
+      slot = function(a, b)
+        return a .. "/" .. b
+      end,
+    })
+    m("a", 1)
+    m("a", 1)
+    m("a", 2)
+    assert.are.equal(2, calls)
+  end)
+
+  it("does not remember a failure, nor an answer keep refuses", function()
+    local answers = { nil, "x", "y" }
+    local i = 0
+    local m = fp.memoize(function()
+      i = i + 1
+      return answers[i], i == 1 and "failed" or nil
+    end)
+    local value, err = m("slot")
+    assert.is_nil(value)
+    assert.are.equal("failed", err)
+    assert.are.equal("x", m("slot"))
+    assert.are.equal("x", m("slot"))
+    assert.are.equal(2, i)
+    local waiting = true
+    local n = 0
+    local k = fp.memoize(function()
+      n = n + 1
+      return "lines", waiting
+    end, {
+      keep = function(_, still_waiting)
+        return not still_waiting
+      end,
+    })
+    k("s")
+    k("s")
+    assert.are.equal(2, n)
+    waiting = false
+    k("s")
+    k("s")
+    assert.are.equal(3, n)
+  end)
+
+  it("says what it holds and forgets on request", function()
+    local m, memo = fp.memoize(fn)
+    assert.is_false(memo.held("a"))
+    m("a", 1)
+    assert.is_true(memo.held("a"))
+    memo.forget()
+    assert.is_false(memo.held("a"))
+    m("a", 1)
+    assert.are.equal(2, calls)
+  end)
+
+  it("slots a table by identity", function()
+    local m = fp.memoize(function(t)
+      calls = calls + 1
+      return t.v
+    end)
+    local one, two = { v = 1 }, { v = 2 }
+    assert.are.equal(1, m(one))
+    assert.are.equal(1, m(one))
+    assert.are.equal(2, m(two))
+    assert.are.equal(2, calls)
+  end)
+end)

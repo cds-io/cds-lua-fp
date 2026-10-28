@@ -296,6 +296,48 @@ Parameters ~
 Return ~
 `(T[])`
 
+------------------------------------------------------------------------------
+Remembers one answer per slot, kept while the slot's key still matches.
+The slot is the first argument unless `slot` says otherwise (a table slot
+is held weakly, so the memo follows the object's life); the key is nil
+unless `key` says otherwise, so a slot alone decides. A failure (a nil
+first value) is never remembered, and `keep` refuses any other answer
+that should not be. Every value the function returned comes back. The
+second value returned is the memo: `held(...)` says whether the slot's
+answer is in, `forget()` drops them all.
+
+>lua
+  local fp = require("cds.fp")
+  local parsed = fp.memoize(function(path) return read(path) end, {
+    key = function(path) return mtime(path) end,
+  })
+  parsed("a.txt")   -- reads
+  parsed("a.txt")   -- the answer, while a.txt's mtime is the same
+<
+Class ~
+{cds.fp.MemoizeOptions}
+Fields ~
+{slot} `(optional)` `(fun(...): any)` the slot the arguments name; the first argument unless given
+{key} `(optional)` `(fun(...): any)` what the slot's answer stays valid under; nil unless given
+{keep} `(optional)` `(fun(...): boolean)` whether an answer (every value returned) is worth remembering
+
+------------------------------------------------------------------------------
+Class ~
+{cds.fp.Memo}
+Fields ~
+{held} `(fun(...): boolean)` whether the arguments' slot holds an answer under their key
+{forget} `(fun())` drops every remembered answer
+
+------------------------------------------------------------------------------
+                                                              *cds.fp.memoize()*
+                           `fp.memoize`({fn}, {opts})
+Parameters ~
+{fn} `(F)`
+{opts} `(optional)` `(cds.fp.MemoizeOptions)`
+Return ~
+`(F)`
+`(cds.fp.Memo)`
+
 
 ==============================================================================
                                                                     *cds.result*
